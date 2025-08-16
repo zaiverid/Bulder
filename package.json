@@ -1,0 +1,30 @@
+{
+  "name": "telegram-remote-control-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot for remote device control with custom APK builder",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.61.0",
+    "ws": "^8.13.0",
+    "child_process": "^1.0.2",
+    "fs-extra": "^11.1.1",
+    "path": "^0.12.7"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "remote",
+    "control",
+    "android",
+    "apk"
+  ],
+  "author": "Your Name",
+  "license": "ISC"
+}
